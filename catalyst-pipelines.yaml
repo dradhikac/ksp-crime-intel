@@ -1,0 +1,20 @@
+version: 1
+runners:
+  Machine:
+    config-id: 2
+jobs:
+  Deploy_Functions:
+    steps:
+      - curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+      - apt-get install -y nodejs
+      - npm i -g zcatalyst-cli
+      - catalyst -v
+      - cd functions/health-check
+      - npm install
+      - cd ../..
+      - catalyst deploy --project << env.PROJECT_NAME >> --org << env.CATALYST_ORG >> --token << env.CATALYST_TOKEN >>
+stages:
+  - name: build
+    runner: Machine
+    jobs:
+      - Deploy_Functions
