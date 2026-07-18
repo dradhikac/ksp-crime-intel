@@ -1,0 +1,9 @@
+{
+  "functions": {
+    "targets": [
+      "health-check"
+    ],
+    "ignore": [],
+    "source": "functions"
+  }
+}

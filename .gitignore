@@ -1,0 +1,7 @@
+cat > .gitignore << 'EOF'
+node_modules/
+.build/
+catalyst-debug.log
+.env
+.DS_Store
+EOF
