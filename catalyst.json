@@ -2,7 +2,8 @@
   "functions": {
     "targets": [
       "health-check",
-      "admin-seed"
+      "admin-seed",
+      "case-api"
     ],
     "ignore": [],
     "source": "functions"

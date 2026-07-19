@@ -1,0 +1,10 @@
+{
+	"name": "case-api",
+	"version": "1.0.0",
+	"main": "index.js",
+	"author": "Radhika D Chougale",
+	"dependencies": {
+		"express": "^5.2.1",
+		"zcatalyst-sdk-node": "latest"
+	}
+}
