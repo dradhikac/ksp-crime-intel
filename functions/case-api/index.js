@@ -143,4 +143,81 @@ app.get('/cases/:id', async (req, res) => {
   }
 });
 
+app.get('/stats/summary', async (req, res) => {
+  try {
+    const catalystApp = catalyst.initialize(req);
+    const segment = catalystApp.cache().segment('StatsCache');
+    const zcql = catalystApp.zcql();
+
+    const cases = await fetchAll(zcql, "SELECT ROWID, CrimeMajorHeadID, CaseStatusID, PoliceStationID, CrimeRegisteredDate, latitude, longitude FROM CaseMaster", 'CaseMaster');
+
+    let aggregates = null;
+    let fromCache = true;
+    try {
+      const cached = await segment.getValue('summary_aggregates');
+      if (cached) aggregates = JSON.parse(cached);
+    } catch (cacheMiss) {
+      fromCache = false;
+    }
+
+    const crimeHeadName = {};
+    if (!aggregates) {
+      const units = await zcql.executeZCQLQuery("SELECT ROWID, DistrictID FROM Unit LIMIT 300");
+      const districts = await zcql.executeZCQLQuery("SELECT ROWID, DistrictName FROM District LIMIT 300");
+      const crimeHeads = await zcql.executeZCQLQuery("SELECT ROWID, CrimeGroupName FROM CrimeHead LIMIT 300");
+      const statuses = await zcql.executeZCQLQuery("SELECT ROWID, CaseStatusName FROM CaseStatusMaster LIMIT 300");
+
+      const unitToDistrict = {};
+      units.forEach(u => { unitToDistrict[String(u.Unit.ROWID)] = String(u.Unit.DistrictID); });
+      const districtName = {};
+      districts.forEach(d => { districtName[String(d.District.ROWID)] = d.District.DistrictName; });
+      crimeHeads.forEach(c => { crimeHeadName[String(c.CrimeHead.ROWID)] = c.CrimeHead.CrimeGroupName; });
+      const statusName = {};
+      statuses.forEach(s => { statusName[String(s.CaseStatusMaster.ROWID)] = s.CaseStatusMaster.CaseStatusName; });
+
+      function bump(map, key) { map[key] = (map[key] || 0) + 1; }
+      const byDistrict = {}, byCrimeHead = {}, byStatus = {}, byMonth = {};
+
+      cases.forEach(row => {
+        const c = row.CaseMaster;
+        bump(byDistrict, districtName[unitToDistrict[String(c.PoliceStationID)]] || 'Unknown');
+        bump(byCrimeHead, crimeHeadName[String(c.CrimeMajorHeadID)] || 'Unknown');
+        bump(byStatus, statusName[String(c.CaseStatusID)] || 'Unknown');
+        bump(byMonth, c.CrimeRegisteredDate ? c.CrimeRegisteredDate.substring(0, 7) : 'Unknown');
+      });
+
+      function toSortedArray(obj) {
+        return Object.entries(obj).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
+      }
+
+      aggregates = {
+        totalCases: cases.length,
+        byDistrict: toSortedArray(byDistrict),
+        byCrimeHead: toSortedArray(byCrimeHead),
+        byStatus: toSortedArray(byStatus),
+        byMonth: Object.entries(byMonth).map(([month, count]) => ({ month, count })).sort((a, b) => a.month.localeCompare(b.month))
+      };
+
+      await segment.put('summary_aggregates', JSON.stringify(aggregates), 1);
+      fromCache = false;
+    } else {
+      // still need crimeHeadName map for hotspotPoints even on a cache hit
+      const crimeHeads = await zcql.executeZCQLQuery("SELECT ROWID, CrimeGroupName FROM CrimeHead LIMIT 300");
+      crimeHeads.forEach(c => { crimeHeadName[String(c.CrimeHead.ROWID)] = c.CrimeHead.CrimeGroupName; });
+    }
+
+    const hotspotPoints = cases
+      .filter(row => row.CaseMaster.latitude && row.CaseMaster.longitude)
+      .map(row => ({
+        lat: row.CaseMaster.latitude,
+        lng: row.CaseMaster.longitude,
+        crimeHead: crimeHeadName[String(row.CaseMaster.CrimeMajorHeadID)] || 'Unknown'
+      }));
+
+    res.status(200).json({ ...aggregates, hotspotPoints, cached: fromCache });
+  } catch (err) {
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
 module.exports = app;
