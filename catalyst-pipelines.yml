@@ -1,0 +1,20 @@
+version: 1
+runners:
+  Machine:
+    config-id: 2
+jobs:
+  Deploy_Functions:
+    steps:
+      - curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+      - apt-get install -y nodejs
+      - npm i -g zcatalyst-cli
+      - catalyst -v
+      - cd functions/health-check
+      - npm install
+      - cd ../..
+      - catalyst deploy --project ksp-crime-intel --org <numeric-org-id> --token <fresh-token>
+stages:
+  - name: build
+    runner: Machine
+    jobs:
+      - Deploy_Functions

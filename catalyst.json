@@ -1,7 +1,8 @@
 {
   "functions": {
     "targets": [
-      "health-check"
+      "health-check",
+      "admin-seed"
     ],
     "ignore": [],
     "source": "functions"
