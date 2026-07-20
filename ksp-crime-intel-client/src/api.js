@@ -24,3 +24,10 @@ export async function getCaseDetail(id) {
   const res = await fetch(`${API_BASE}/cases/${id}`);
   return res.json();
 }
+
+export async function getNetworkGraph() {
+  const res = await fetch(`${API_BASE}/network/graph`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to load network graph');
+  return data;
+}
