@@ -2,6 +2,7 @@
 const express = require('express');
 const catalyst = require('zcatalyst-sdk-node');
 const app = express();
+app.use(express.json());
 
 async function fetchAll(zcql, query, tableKey) {
   let all = [];
@@ -574,5 +575,103 @@ app.get('/ml/risk-scores', async (req, res) => {
     res.status(500).json({ error: err.message, stack: err.stack });
   }
 });
+
+app.get('/ml/export-narratives', async (req, res) => {
+  try {
+    const catalystApp = catalyst.initialize(req);
+    const zcql = catalystApp.zcql();
+
+    const cases = await fetchAll(zcql, "SELECT ROWID, CrimeNo, CrimeRegisteredDate, CrimeMajorHeadID, CaseStatusID, PoliceStationID, BriefFacts FROM CaseMaster", 'CaseMaster');
+    const units = await zcql.executeZCQLQuery("SELECT ROWID, DistrictID FROM Unit LIMIT 300");
+    const districts = await zcql.executeZCQLQuery("SELECT ROWID, DistrictName FROM District LIMIT 300");
+    const crimeHeads = await zcql.executeZCQLQuery("SELECT ROWID, CrimeGroupName FROM CrimeHead LIMIT 300");
+    const statuses = await zcql.executeZCQLQuery("SELECT ROWID, CaseStatusName FROM CaseStatusMaster LIMIT 300");
+
+    const unitToDistrict = {};
+    units.forEach(u => { unitToDistrict[String(u.Unit.ROWID)] = String(u.Unit.DistrictID); });
+    const districtName = {};
+    districts.forEach(d => { districtName[String(d.District.ROWID)] = d.District.DistrictName; });
+    const crimeHeadName = {};
+    crimeHeads.forEach(c => { crimeHeadName[String(c.CrimeHead.ROWID)] = c.CrimeHead.CrimeGroupName; });
+    const statusName = {};
+    statuses.forEach(s => { statusName[String(s.CaseStatusMaster.ROWID)] = s.CaseStatusMaster.CaseStatusName; });
+
+    const lines = cases.map(row => {
+      const c = row.CaseMaster;
+      const dName = districtName[unitToDistrict[String(c.PoliceStationID)]] || 'Unknown';
+      const hName = crimeHeadName[String(c.CrimeMajorHeadID)] || 'Unknown';
+      const sName = statusName[String(c.CaseStatusID)] || 'Unknown';
+      return `Case ${c.CrimeNo} | District: ${dName} | Crime Type: ${hName} | Status: ${sName} | Registered: ${c.CrimeRegisteredDate}\n${c.BriefFacts}\n`;
+    });
+
+    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Content-Disposition', 'attachment; filename="case_narratives.txt"');
+    res.status(200).send(lines.join('\n---\n\n'));
+  } catch (err) {
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
+app.post('/copilot/ask', async (req, res) => {
+  try {
+    const catalystApp = catalyst.initialize(req);
+    const segment = catalystApp.cache().segment('RagAuth');
+
+    const { query } = req.body;
+    if (!query) {
+      return res.status(400).json({ error: 'query is required' });
+    }
+
+    const clientId = await segment.getValue('client_id');
+    const clientSecret = await segment.getValue('client_secret');
+    const refreshToken = await segment.getValue('refresh_token');
+
+    // Mint a fresh access token from the refresh token on every call —
+    // simpler and safer than caching a short-lived token near its expiry boundary
+    const tokenResp = await fetch('https://accounts.zoho.in/oauth/v2/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        refresh_token: refreshToken,
+        client_id: clientId,
+        client_secret: clientSecret,
+        grant_type: 'refresh_token'
+      })
+    });
+    const tokenData = await tokenResp.json();
+    if (!tokenData.access_token) {
+      return res.status(502).json({ error: 'Failed to mint access token', details: tokenData });
+    }
+
+    const ragResp = await fetch(
+      'https://api.catalyst.zoho.in/quickml/v1/project/53381000000063052/rag/answer',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'CATALYST-ORG': '60078535319',
+          'Authorization': `Zoho-oauthtoken ${tokenData.access_token}`
+        },
+        body: JSON.stringify({
+          query,
+          documents: ['7442000000005042']
+        })
+      }
+    );
+    const ragData = await ragResp.json();
+
+    if (ragData.status !== 'success') {
+      return res.status(502).json({ error: 'RAG call failed', details: ragData });
+    }
+
+    res.status(200).json({
+      answer: ragData.response,
+      sources: ragData.retrieved_nodes
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
 
 module.exports = app;

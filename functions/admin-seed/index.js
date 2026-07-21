@@ -2,6 +2,7 @@
 const express = require('express');
 const catalyst = require('zcatalyst-sdk-node');
 const app = express();
+app.use(express.json());
 
 app.post('/lookups', async (req, res) => {
   try {
@@ -817,5 +818,26 @@ app.post('/layer6', async (req, res) => {
     res.status(500).json({ error: err.message, stack: err.stack });
   }
 });
+
+app.post('/seed-rag-credentials', async (req, res) => {
+  try {
+    const catalystApp = catalyst.initialize(req);
+    const segment = catalystApp.cache().segment('RagAuth');
+
+    const { clientId, clientSecret, refreshToken } = req.body;
+    if (!clientId || !clientSecret || !refreshToken) {
+      return res.status(400).json({ error: 'clientId, clientSecret, and refreshToken are all required' });
+    }
+
+    await segment.put('client_id', clientId, 48);
+    await segment.put('client_secret', clientSecret, 48);
+    await segment.put('refresh_token', refreshToken, 48);
+
+    res.status(200).json({ status: 'credentials stored' });
+  } catch (err) {
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
 
 module.exports = app;
