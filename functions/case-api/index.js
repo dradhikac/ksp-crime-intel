@@ -342,4 +342,237 @@ app.get('/network/graph', async (req, res) => {
   }
 });
 
+app.get('/ml/training-data', async (req, res) => {
+  try {
+    const catalystApp = catalyst.initialize(req);
+    const zcql = catalystApp.zcql();
+
+    const cases = await fetchAll(zcql, "SELECT ROWID, PoliceStationID, GravityOffenceID, CrimeRegisteredDate FROM CaseMaster", 'CaseMaster');
+    const units = await zcql.executeZCQLQuery("SELECT ROWID, DistrictID FROM Unit LIMIT 300");
+    const districts = await zcql.executeZCQLQuery("SELECT ROWID, DistrictName FROM District LIMIT 300");
+    const gravities = await zcql.executeZCQLQuery("SELECT ROWID, LookupValue FROM GravityOffence LIMIT 300");
+
+    const unitToDistrict = {};
+    units.forEach(u => { unitToDistrict[String(u.Unit.ROWID)] = String(u.Unit.DistrictID); });
+    const districtName = {};
+    districts.forEach(d => { districtName[String(d.District.ROWID)] = d.District.DistrictName; });
+    const heinousId = gravities.find(g => g.GravityOffence.LookupValue === 'Heinous')?.GravityOffence.ROWID;
+
+    // Bucket every case into district + year-month
+    const buckets = {}; // key: districtName|YYYY-MM
+    cases.forEach(row => {
+      const c = row.CaseMaster;
+      if (!c.CrimeRegisteredDate) return;
+      const dName = districtName[unitToDistrict[String(c.PoliceStationID)]] || 'Unknown';
+      const month = c.CrimeRegisteredDate.substring(0, 7);
+      const key = `${dName}|${month}`;
+      if (!buckets[key]) buckets[key] = { total: 0, heinous: 0 };
+      buckets[key].total++;
+      if (String(c.GravityOffenceID) === String(heinousId)) buckets[key].heinous++;
+    });
+
+    // Build a sorted month axis so we can compute rolling features per district
+    const allMonths = [...new Set(Object.keys(buckets).map(k => k.split('|')[1]))].sort();
+    const allDistricts = [...new Set(districts.map(d => d.District.DistrictName))];
+
+    const rows = [];
+    allDistricts.forEach(dName => {
+      allMonths.forEach((month, idx) => {
+        const key = `${dName}|${month}`;
+        const current = buckets[key] || { total: 0, heinous: 0 };
+
+        // Prior month + rolling 3-month average as predictive features
+        const priorMonth = idx > 0 ? allMonths[idx - 1] : null;
+        const priorTotal = priorMonth ? (buckets[`${dName}|${priorMonth}`]?.total || 0) : 0;
+
+        const last3 = allMonths.slice(Math.max(0, idx - 3), idx);
+        const rolling3Avg = last3.length > 0
+          ? last3.reduce((s, m) => s + (buckets[`${dName}|${m}`]?.total || 0), 0) / last3.length
+          : 0;
+
+        const monthNum = parseInt(month.split('-')[1]);
+        const heinousRatio = current.total > 0 ? current.heinous / current.total : 0;
+
+        // Label: is THIS month's volume >= 1.5x the district's rolling average? (what we're teaching the model to predict)
+        const riskLabel = current.total >= rolling3Avg * 1.5 && current.total >= 3 ? 'High' : 'Normal';
+
+        rows.push({
+          district: dName,
+          month_number: monthNum,
+          prior_month_count: priorTotal,
+          rolling_3month_avg: Math.round(rolling3Avg * 100) / 100,
+          heinous_ratio: Math.round(heinousRatio * 100) / 100,
+          current_month_count: current.total,
+          risk_label: riskLabel
+        });
+      });
+    });
+
+    // Only keep rows with enough history to be meaningful
+    const cleanRows = rows.filter(r => r.rolling_3month_avg > 0 || r.prior_month_count > 0);
+
+    const headers = ['district', 'month_number', 'prior_month_count', 'rolling_3month_avg', 'heinous_ratio', 'current_month_count', 'risk_label'];
+    const csvLines = [headers.join(',')];
+    cleanRows.forEach(r => {
+      csvLines.push(headers.map(h => r[h]).join(','));
+    });
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="risk_training_data.csv"');
+    res.status(200).send(csvLines.join('\n'));
+  } catch (err) {
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+app.get('/ml/anomalies', async (req, res) => {
+  try {
+    const catalystApp = catalyst.initialize(req);
+    const zcql = catalystApp.zcql();
+
+    const cases = await fetchAll(zcql, "SELECT ROWID, CrimeNo, PoliceStationID, CrimeMajorHeadID, CrimeRegisteredDate, IncidentFromDate FROM CaseMaster", 'CaseMaster');
+    const units = await zcql.executeZCQLQuery("SELECT ROWID, DistrictID FROM Unit LIMIT 300");
+    const districts = await zcql.executeZCQLQuery("SELECT ROWID, DistrictName FROM District LIMIT 300");
+    const crimeHeads = await zcql.executeZCQLQuery("SELECT ROWID, CrimeGroupName FROM CrimeHead LIMIT 300");
+
+    const unitToDistrict = {};
+    units.forEach(u => { unitToDistrict[String(u.Unit.ROWID)] = String(u.Unit.DistrictID); });
+    const districtName = {};
+    districts.forEach(d => { districtName[String(d.District.ROWID)] = d.District.DistrictName; });
+    const crimeHeadName = {};
+    crimeHeads.forEach(c => { crimeHeadName[String(c.CrimeHead.ROWID)] = c.CrimeHead.CrimeGroupName; });
+
+    // Baseline: expected crime-type distribution per district (overall proportions)
+    const districtCrimeCounts = {};
+    const districtTotals = {};
+    cases.forEach(row => {
+      const c = row.CaseMaster;
+      const dName = districtName[unitToDistrict[String(c.PoliceStationID)]] || 'Unknown';
+      const hName = crimeHeadName[String(c.CrimeMajorHeadID)] || 'Unknown';
+      districtTotals[dName] = (districtTotals[dName] || 0) + 1;
+      if (!districtCrimeCounts[dName]) districtCrimeCounts[dName] = {};
+      districtCrimeCounts[dName][hName] = (districtCrimeCounts[dName][hName] || 0) + 1;
+    });
+
+    const anomalies = [];
+
+    // Flag 1: crime type appearing in a district where it's rare (<5% of that district's cases) but did occur
+    Object.entries(districtCrimeCounts).forEach(([dName, crimeCounts]) => {
+      const total = districtTotals[dName];
+      Object.entries(crimeCounts).forEach(([hName, count]) => {
+        const ratio = count / total;
+        if (ratio < 0.05 && total >= 10) {
+          anomalies.push({
+            type: 'unusual_crime_type_for_district',
+            district: dName,
+            crimeHead: hName,
+            detail: `${hName} accounts for only ${(ratio * 100).toFixed(1)}% of cases in ${dName} — statistically unusual for this district`,
+            severity: 'medium'
+          });
+        }
+      });
+    });
+
+    // Flag 2: cases logged with an unusually large gap between incident and registration (>30 days)
+    cases.forEach(row => {
+      const c = row.CaseMaster;
+      if (!c.IncidentFromDate || !c.CrimeRegisteredDate) return;
+      const incidentDate = new Date(c.IncidentFromDate);
+      const registeredDate = new Date(c.CrimeRegisteredDate);
+      const gapDays = (registeredDate - incidentDate) / (1000 * 60 * 60 * 24);
+      if (gapDays > 30) {
+        anomalies.push({
+          type: 'delayed_reporting',
+          crimeNo: c.CrimeNo,
+          district: districtName[unitToDistrict[String(c.PoliceStationID)]] || 'Unknown',
+          detail: `${Math.round(gapDays)}-day gap between incident and registration — worth reviewing for delayed reporting patterns`,
+          severity: gapDays > 90 ? 'high' : 'medium'
+        });
+      }
+    });
+
+    res.status(200).json({
+      totalAnomalies: anomalies.length,
+      anomalies: anomalies.sort((a, b) => (a.severity === 'high' ? -1 : 1))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
+app.get('/ml/risk-scores', async (req, res) => {
+  try {
+    const catalystApp = catalyst.initialize(req);
+    const zcql = catalystApp.zcql();
+
+    const cases = await fetchAll(zcql, "SELECT ROWID, PoliceStationID, GravityOffenceID, CrimeRegisteredDate FROM CaseMaster", 'CaseMaster');
+    const units = await zcql.executeZCQLQuery("SELECT ROWID, DistrictID FROM Unit LIMIT 300");
+    const districts = await zcql.executeZCQLQuery("SELECT ROWID, DistrictName FROM District LIMIT 300");
+    const gravities = await zcql.executeZCQLQuery("SELECT ROWID, LookupValue FROM GravityOffence LIMIT 300");
+
+    const unitToDistrict = {};
+    units.forEach(u => { unitToDistrict[String(u.Unit.ROWID)] = String(u.Unit.DistrictID); });
+    const districtName = {};
+    districts.forEach(d => { districtName[String(d.District.ROWID)] = d.District.DistrictName; });
+    const heinousId = gravities.find(g => g.GravityOffence.LookupValue === 'Heinous')?.GravityOffence.ROWID;
+
+    const buckets = {};
+    cases.forEach(row => {
+      const c = row.CaseMaster;
+      if (!c.CrimeRegisteredDate) return;
+      const dName = districtName[unitToDistrict[String(c.PoliceStationID)]] || 'Unknown';
+      const month = c.CrimeRegisteredDate.substring(0, 7);
+      const key = `${dName}|${month}`;
+      if (!buckets[key]) buckets[key] = { total: 0, heinous: 0 };
+      buckets[key].total++;
+      if (String(c.GravityOffenceID) === String(heinousId)) buckets[key].heinous++;
+    });
+
+    const allMonths = [...new Set(Object.keys(buckets).map(k => k.split('|')[1]))].sort();
+    const latestMonth = allMonths[allMonths.length - 1];
+    const allDistricts = [...new Set(districts.map(d => d.District.DistrictName))];
+
+    const results = allDistricts.map(dName => {
+      const currentKey = `${dName}|${latestMonth}`;
+      const current = buckets[currentKey] || { total: 0, heinous: 0 };
+      const monthIdx = allMonths.indexOf(latestMonth);
+      const last3 = allMonths.slice(Math.max(0, monthIdx - 3), monthIdx);
+      const rolling3Avg = last3.length > 0
+        ? last3.reduce((s, m) => s + (buckets[`${dName}|${m}`]?.total || 0), 0) / last3.length
+        : 0;
+      const heinousRatio = current.total > 0 ? current.heinous / current.total : 0;
+
+      // Same logic used to derive the training label in Module 7 Step 1 —
+      // volume spike (>=1.5x rolling average, minimum 3 cases) drives High risk;
+      // a high heinous-offence ratio independently elevates risk too
+      let riskLevel = 'Normal';
+      const reasons = [];
+      if (current.total >= rolling3Avg * 1.5 && current.total >= 3) {
+        riskLevel = 'High';
+        reasons.push(`case volume (${current.total}) is ${(current.total / (rolling3Avg || 1)).toFixed(1)}x the 3-month rolling average (${rolling3Avg.toFixed(1)})`);
+      }
+      if (heinousRatio >= 0.4 && current.total >= 2) {
+        riskLevel = 'High';
+        reasons.push(`${(heinousRatio * 100).toFixed(0)}% of this month's cases are heinous offences`);
+      }
+
+      return {
+        district: dName,
+        riskLevel,
+        reasons,
+        currentMonthCount: current.total,
+        rolling3MonthAvg: Math.round(rolling3Avg * 100) / 100,
+        heinousRatio: Math.round(heinousRatio * 100) / 100
+      };
+    });
+
+    res.status(200).json({
+      month: latestMonth,
+      method: 'rule-based scoring (Zia AutoML pipeline trained and validated separately — see docs/module7-ml-notes.md)',
+      results: results.sort((a, b) => (b.riskLevel === 'High' ? 1 : 0) - (a.riskLevel === 'High' ? 1 : 0))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
 module.exports = app;
