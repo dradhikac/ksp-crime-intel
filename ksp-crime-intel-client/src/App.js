@@ -9,6 +9,7 @@ import { getStatsSummary } from './api';
 import Login from './pages/Login';
 import CrimeMap from './pages/CrimeMap';
 import NetworkGraph from './pages/NetworkGraph';
+import PredictiveIntel from './pages/PredictiveIntel';
 
 const STATUS_COLORS = {
   'Charge Sheeted': '#2e7d32',
@@ -44,7 +45,7 @@ function Sidebar() {
       <nav style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
         <Link to="/" style={navItemStyle('/')}>Dashboard</Link>
         <Link to="/map" style={navItemStyle('/map')}>Crime Map</Link>
-        <Link to="/network" style={navItemStyle('/network')}>Network Analysis</Link>
+        <Link to="/predictive" style={navItemStyle('/predictive')}>Predictive Intel</Link>
         <span style={{ opacity: 0.3 }}>Predictive Intel (Module 7)</span>
       </nav>
     </aside>
@@ -191,6 +192,7 @@ function AppShell({ user }) {
           <Route path="/map" element={<CrimeMap />} />
           <Route path="*" element={<Navigate to="/" replace />} />
           <Route path="/network" element={<NetworkGraph />} />
+          <Route path="/predictive" element={<PredictiveIntel />} />
         </Routes>
       </div>
     </div>

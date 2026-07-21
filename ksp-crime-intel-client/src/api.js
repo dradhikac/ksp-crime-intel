@@ -31,3 +31,28 @@ export async function getNetworkGraph() {
   if (!res.ok) throw new Error(data.error || 'Failed to load network graph');
   return data;
 }
+
+export async function getRiskScores() {
+  const res = await fetch(`${API_BASE}/ml/risk-scores`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to load risk scores');
+  return data;
+}
+
+export async function getAnomalies() {
+  const res = await fetch(`${API_BASE}/ml/anomalies`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to load anomalies');
+  return data;
+}
+
+export async function askCopilot(query) {
+  const res = await fetch(`${API_BASE}/copilot/ask`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Copilot request failed');
+  return data;
+}
