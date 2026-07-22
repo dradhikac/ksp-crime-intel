@@ -673,5 +673,94 @@ app.post('/copilot/ask', async (req, res) => {
   }
 });
 
+app.get('/reports/case-summary', async (req, res) => {
+  try {
+    const catalystApp = catalyst.initialize(req);
+    const smartbrowz = catalystApp.smartbrowz();
+    const zcql = catalystApp.zcql();
+
+    const cases = await fetchAll(zcql, "SELECT ROWID, CrimeMajorHeadID, CaseStatusID, PoliceStationID FROM CaseMaster", 'CaseMaster');
+    const units = await zcql.executeZCQLQuery("SELECT ROWID, DistrictID FROM Unit LIMIT 300");
+    const districts = await zcql.executeZCQLQuery("SELECT ROWID, DistrictName FROM District LIMIT 300");
+    const crimeHeads = await zcql.executeZCQLQuery("SELECT ROWID, CrimeGroupName FROM CrimeHead LIMIT 300");
+
+    const unitToDistrict = {};
+    units.forEach(u => { unitToDistrict[String(u.Unit.ROWID)] = String(u.Unit.DistrictID); });
+    const districtName = {};
+    districts.forEach(d => { districtName[String(d.District.ROWID)] = d.District.DistrictName; });
+    const crimeHeadName = {};
+    crimeHeads.forEach(c => { crimeHeadName[String(c.CrimeHead.ROWID)] = c.CrimeHead.CrimeGroupName; });
+
+    const byDistrict = {};
+    const byCrimeHead = {};
+    cases.forEach(row => {
+      const c = row.CaseMaster;
+      const dName = districtName[unitToDistrict[String(c.PoliceStationID)]] || 'Unknown';
+      const hName = crimeHeadName[String(c.CrimeMajorHeadID)] || 'Unknown';
+      byDistrict[dName] = (byDistrict[dName] || 0) + 1;
+      byCrimeHead[hName] = (byCrimeHead[hName] || 0) + 1;
+    });
+
+    const topDistricts = Object.entries(byDistrict).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    const topCrimeHeads = Object.entries(byCrimeHead).sort((a, b) => b[1] - a[1]);
+
+    const html = `
+      <html><head><style>
+        body { font-family: Arial, sans-serif; padding: 30px; color: #222; }
+        h1 { color: #1a2332; border-bottom: 2px solid #1a2332; padding-bottom: 8px; }
+        h2 { color: #333; margin-top: 30px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #ddd; }
+        th { background: #f0f2f5; }
+        .meta { color: #666; font-size: 0.9em; }
+      </style></head>
+      <body>
+        <h1>KSP Crime Intelligence Report</h1>
+        <p class="meta">Generated: ${new Date().toISOString().split('T')[0]} | Total Cases: ${cases.length}</p>
+        <h2>Top Districts by Case Volume</h2>
+        <table>
+          <tr><th>District</th><th>Case Count</th></tr>
+          ${topDistricts.map(([name, count]) => `<tr><td>${name}</td><td>${count}</td></tr>`).join('')}
+        </table>
+        <h2>Cases by Crime Category</h2>
+        <table>
+          <tr><th>Category</th><th>Case Count</th></tr>
+          ${topCrimeHeads.map(([name, count]) => `<tr><td>${name}</td><td>${count}</td></tr>`).join('')}
+        </table>
+      </body></html>
+    `;
+
+  let result;
+      try {
+        result = await smartbrowz.convertToPdf(html, {
+          pdf_options: { format: 'A4' }
+        });
+      } catch (pdfErr) {
+        return res.status(500).json({
+          stage: 'convertToPdf',
+          message: pdfErr.message,
+          code: pdfErr.code
+        });
+      }
+
+      if (result.statusCode && result.statusCode >= 400) {
+        const chunks = [];
+        for await (const chunk of result) chunks.push(chunk);
+        const errorBody = Buffer.concat(chunks).toString('utf8');
+        return res.status(502).json({ error: 'SmartBrowz returned an error', statusCode: result.statusCode, body: errorBody });
+      }
+
+      const chunks = [];
+      for await (const chunk of result) chunks.push(chunk);
+      const pdfBuffer = Buffer.concat(chunks);
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename="crime_intelligence_report.pdf"');
+      res.status(200).send(pdfBuffer);
+    } catch (err) {
+      res.status(500).json({ error: err.message, stack: err.stack });
+    }
+});
+
 
 module.exports = app;

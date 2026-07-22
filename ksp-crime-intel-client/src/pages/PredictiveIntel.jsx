@@ -4,6 +4,15 @@ import { getRiskScores, getAnomalies, askCopilot } from '../api';
 const RISK_COLORS = { High: '#c62828', Normal: '#2e7d32' };
 const SEVERITY_COLORS = { high: '#c62828', medium: '#ef6c00' };
 
+function formatMessage(text) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) =>
+    part.startsWith('**') && part.endsWith('**')
+      ? <strong key={i}>{part.slice(2, -2)}</strong>
+      : <span key={i}>{part}</span>
+  );
+}
+
 export default function PredictiveIntel() {
   const [riskData, setRiskData] = useState(null);
   const [anomalyData, setAnomalyData] = useState(null);
@@ -105,7 +114,7 @@ export default function PredictiveIntel() {
               color: m.role === 'user' ? '#fff' : '#222',
               borderRadius: 12, padding: '0.6rem 0.9rem', maxWidth: '75%', fontSize: '0.9rem'
             }}>
-              {m.text}
+              {formatMessage(m.text)}
             </div>
           ))}
           {asking && <div style={{ color: '#999', fontSize: '0.85rem' }}>Thinking...</div>}
