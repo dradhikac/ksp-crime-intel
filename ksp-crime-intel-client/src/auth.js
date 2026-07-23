@@ -11,5 +11,19 @@ export function checkAuth() {
 }
 
 export function logout() {
-  return window.catalyst.auth.signOut();
+  return new Promise((resolve) => {
+    const finish = () => {
+      document.cookie.split(';').forEach(c => {
+        document.cookie = c.replace(/^ +/, '').replace(/=.*/, '=;expires=' + new Date().toUTCString() + ';path=/');
+      });
+      resolve();
+    };
+    if (!window.catalyst || !window.catalyst.auth) {
+      finish();
+      return;
+    }
+    window.catalyst.auth.signOut().then(finish).catch(finish);
+  });
+
 }
+

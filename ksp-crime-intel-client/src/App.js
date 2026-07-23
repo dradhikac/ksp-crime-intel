@@ -61,6 +61,9 @@ function StatCard({ label, value, highlight }) {
     }}>
       <div style={{ fontSize: '0.85rem', color: '#666' }}>{label}</div>
       <div style={{ fontSize: '1.5rem', fontWeight: 700, color: highlight ? '#c62828' : '#1a2332' }}>{value}</div>
+      <button onClick={downloadReport} style={{ marginBottom: '1.5rem' }}>
+  📄 Download Intelligence Report (PDF)
+</button>
     </div>
   );
 }
@@ -86,12 +89,15 @@ function TopBar({ user, onLogout }) {
     </div>
   );
 }
+function downloadReport() {
+  window.open('/server/case-api/reports/case-summary', '_blank');
+}
 
 function Dashboard({ user }) {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-
+  
   useEffect(() => {
     getStatsSummary()
       .then(data => { setStats(data); setLoading(false); })
@@ -177,10 +183,12 @@ function Dashboard({ user }) {
 }
 
 function AppShell({ user }) {
-  const navigate = useNavigate();
-  function handleLogout() {
-    logout().then(() => navigate('/login'));
-  }
+
+    function handleLogout() {
+    logout().then(() => {
+      window.location.href = '/app/login';
+    });
+}
 
   return (
     <div style={{ display: 'flex', height: '100vh' }}>
@@ -221,4 +229,6 @@ export default function App() {
       </Routes>
     </BrowserRouter>
   );
+
+  
 }

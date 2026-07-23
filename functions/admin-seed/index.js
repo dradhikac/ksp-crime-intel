@@ -839,5 +839,31 @@ app.post('/seed-rag-credentials', async (req, res) => {
   }
 });
 
+app.post('/seed-station-mapping', async (req, res) => {
+  try {
+    const catalystApp = catalyst.initialize(req);
+    const datastore = catalystApp.datastore();
+    const zcql = catalystApp.zcql();
+
+    const units = await zcql.executeZCQLQuery("SELECT ROWID, UnitName FROM Unit LIMIT 300");
+    const firstUnit = units[0].Unit;
+
+    const { stationOfficerEmail, scrbAnalystEmail } = req.body;
+    if (!stationOfficerEmail || !scrbAnalystEmail) {
+      return res.status(400).json({ error: 'stationOfficerEmail and scrbAnalystEmail are both required' });
+    }
+
+    const rows = [
+      { Email: stationOfficerEmail, UnitID: firstUnit.ROWID, RoleName: 'STATION_OFFICER' },
+      { Email: scrbAnalystEmail, UnitID: null, RoleName: 'SCRB_ANALYST' }
+    ];
+    const inserted = await datastore.table('UserStationMapping').insertRows(rows);
+
+    res.status(200).json({ status: 'seeded', assignedUnit: firstUnit.UnitName, count: inserted.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
 
 module.exports = app;
